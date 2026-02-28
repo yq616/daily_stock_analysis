@@ -199,9 +199,9 @@ jobs:
           
           # 执行分析
           if [ "$MODE" = "market-only" ]; then
-            python main.py --market-review
+            python main.py --market-review --force-run
           elif [ "$MODE" = "stocks-only" ]; then
-            python main.py --no-market-review
+            python main.py --no-market-review --force-run
           else
             python main.py --force-run
           fi
