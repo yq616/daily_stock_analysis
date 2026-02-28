@@ -203,7 +203,7 @@ jobs:
           elif [ "$MODE" = "stocks-only" ]; then
             python main.py --no-market-review
           else
-            python main.py
+            python main.py --force-run
           fi
       
       - name: 上传分析报告
