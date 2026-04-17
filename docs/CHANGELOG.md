@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] `AGENT_MAX_STEPS` 在 orchestrator 多 Agent 模式下统一明确为“默认作为各子 Agent 的步数上限而非硬覆盖；TechnicalAgent 等高默认值 Agent 会被封顶、低默认值 Agent 保持原值；当用户主动调高（>10）时，再统一覆盖所有子 Agent 采用全局值”，同时修复用户设置 12 但 TechnicalAgent 仍以默认 6 步运行并报 "Agent exceeded max steps" 的问题（fixes #1026）
 - [修复] Specialist（Skill）Agent 失败不再中断整个分析管线，改为与 intel/risk 相同的优雅降级策略
 - [改进] Agent 超步数错误信息增加 AGENT_MAX_STEPS 调整提示，帮助用户自助排查
+- [修复] 分析报告 API 在 `strategy` 区输出 `ideal_buy` / `secondary_buy` / `stop_loss` / `take_profit` 时统一将数值型点位转为字符串，修复 LLM 或历史库返回 float 导致 `ReportStrategy` Pydantic 校验失败、历史详情与部分分析结果接口报错的问题
+- [修复] `AkshareFundamentalAdapter` 按当前 AkShare 接口语义修正基本面抓取：`stock_yjyg_em` / `stock_yjkb_em` / `stock_yjbb_em` 改为按报告期查询后过滤目标股票，`stock_gdfx_top_10_em` 自动补交易所前缀与报告期参数，`stock_institute_hold` 改为按报告期代码查询，修复新版 AkShare 下 growth/earnings/institution 基本面块普遍获取失败的问题
 - [修复] **MiniMax-M2.7 模型连接测试支持** — 修复 LLM 通道连接测试在 MiniMax-M2.7 模型下返回 "Empty response" 的问题；增加了 `max_tokens` 上限（8→256）以容纳 MiniMax 思考过程，并添加 `content_blocks` 格式解析逻辑统一处理 MiniMax 响应格式差异。
 - [修复] 移除 `HistoryItem` 与 `ReportSummary` 响应 Schema 中 `sentiment_score` 的 `ge=0/le=100` 约束（fixes #942）——历史库中存储的超范围负值或大于 100 的情绪评分不再触发 Pydantic ValidationError，历史列表与详情接口恢复正常返回。
 - [改进] 后端股票名称解析改为优先复用前端 `stocks.index.json` 全量索引并懒加载缓存；纯后端/缺失静态资源场景静默降级回 `STOCK_NAME_MAP` 与原有数据源回退链路。
@@ -24,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] `StockAnalysisPipeline` 搜索服务与社交舆情服务改为可选降级初始化：任一服务初始化异常时记录 warning 并以禁用状态继续运行，避免外部依赖抖动阻塞主分析链路与 SSE 进度回调。
 - [文档] DEPLOY.md 和 deploy-webui-cloud.md 新增"UI 元素异常变大/布局错乱"排查步骤（重建 Docker 镜像或手动执行 npm run build）
 - [文档] 补充飞书 Webhook 配置说明：强调 `FEISHU_WEBHOOK_URL` 是群通知必填项、`FEISHU_WEBHOOK_SECRET` 与飞书机器人「签名校验」必须两端同时启用或同时关闭、`FEISHU_APP_SECRET` 仅用于应用/Stream Bot 模式不可替代 Webhook；同步完善英文指南并在 `.env.example` 为相关配置项补充内联说明注释
+- [文档] 新增 Hermes Agent 交接文档与 skill 资产，明确 DSA 的能力边界、推荐 API 动作映射、飞书/微信接入方式，以及供外部 Agent 直接消费的 skill spec
 
 - [新功能] 集成 Longbridge OpenAPI 作为美股/港股可选数据源；配置 `LONGBRIDGE_*` 后优先使用长桥获取日线与实时行情，YFinance / AkShare 兜底；未配置时行为与此前一致。长桥联调请使用 `tests/longbridge_live_smoke.py`（手动脚本，不参与 pytest 收集）。
 - [文档] 澄清 README（中/英/繁）中长桥「首选 / 兜底 / 未配置不调用」的边界；`docs/README_EN.md` / `docs/README_CHT.md` 顶部导航与完整指南链接改为 `./` 相对路径，避免在文档子目录下解析错误；`LONGBRIDGE_PRINT_QUOTE_PACKAGES` 与代码及 `.env.example` 对齐为未设置时默认关闭。
@@ -44,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 集成 Anspire Search 作为可选语义搜索后端; 配置 `ANSPIRE_*` 可使用Anspire Search获取实时行情及新闻资讯，未配置时行为与此前一致。Anspire Search请使用 `tests/test_anspire_search.py`（手动脚本）。
 - [修复] GitHub Actions `daily_analysis.yml` 未注入 `REPORT_LANGUAGE` 环境变量，导致用户在 Secrets/Variables 中配置后不生效（fixes #1013）
 - [修复] `GET /api/v1/analysis/status/{task_id}` 从数据库回填已完成任务时缺少 `current_price` / `change_pct`，导致首页报告股票名旁不显示实时价格（fixes #983）
+- [改进] 搜索服务支持 `MINIMAX_CN_API_KEY`（中国版 endpoint）作为 `MINIMAX_API_KEYS` 的 fallback，与 Hermes 共享 MiniMax China API key 配置
 
 ## [3.12.0] - 2026-04-01
 
@@ -208,6 +212,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - 📘 **新增 Tushare 股票列表工具文档** — 新增 `docs/TUSHARE_STOCK_LIST_GUIDE.md`，说明股票列表抓取工具的使用方法、数据格式和常见问题。
 - 🌍 **补齐定时模式与关联板块的双语说明** — `docs/full-guide.md` / `docs/full-guide_EN.md` 现在明确说明 scheduled mode 会在每次执行前重新读取 `STOCK_LIST`，并同步补充个股关联板块展示能力说明，减少配置预期偏差。
 - 🧭 **调整 Agent 术语兼容文案** — README、双语文档、设置页与问股界面继续以“策略”作为用户入口主称呼，同时补充 `skill` 作为内部统一命名，降低迁移期理解成本。
+### 新功能
+
+- 🛠️ **一键同步 upstream 并重建 Docker 服务脚本** — 新增 `scripts/update-from-upstream.sh`，用于在 `origin` + `upstream` fork 工作流下，一次性完成 `fetch upstream`、`fast-forward main`、推送 `origin`、重建并拉起 Docker Compose 服务；同时补充中英文部署文档中的使用说明，便于长期自托管环境更新。
+- 🍎 **macOS launchd 大盘复盘脚本** — 新增 `scripts/run_market_review_launchd.sh`，用于在 macOS 上通过 `launchd` 每天定时临时拉起 Docker `analyzer` 容器，仅执行一次 `--market-review`；中英文部署文档同步补充了 `LaunchAgent` 配置示例，方便替代项目内置常驻定时模式。
+
+### 修复
+
+- 🎨 **Web 默认主题切换为浅色** — Web UI 的默认主题从深色调整为浅色，系统设置中的 Webhook/通知等配置页面首次打开时会直接使用浅色背景；主题切换器的未解析兜底图标也同步改为浅色语义，减少首屏视觉闪烁和“页面像没加载样式”的误解。
+- 🧾 **Web 报告透明度区复制按钮层级修复**（#749）— `ReportDetails` 中“原始分析结果 / 分析快照”的复制按钮补齐可点击层级，避免被下方 JSON 内容覆盖后出现按钮可见但无法点击的问题。
+- 🧾 **Web 报告详情复制提示按面板独立** — `ReportDetails` 中“原始分析结果”和“分析快照”的复制提示不再共享同一个 `copied` 状态；当两个面板同时展开时，复制其中一个只会更新对应按钮文案，避免两个按钮同时显示“已复制”的误导反馈。
+- 📊 **Agent backtest tool semantics** — `get_skill_backtest_summary` 现在要求显式传入 `skill_id`，缺失时会返回明确的校验提示；当仓库尚未持久化真实 skill 级汇总时会返回明确的 unsupported/info 响应，而不再复用 overall 指标。成功返回路径会同时保留 normalized 指标和 `*_pct` 兼容字段，相关工具错误返回也改为稳定通用文案，避免向 agent 或用户暴露底层异常细节。
 
 ## [3.9.0] - 2026-03-20
 

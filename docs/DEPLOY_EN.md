@@ -76,12 +76,34 @@ docker-compose -f ./docker/docker-compose.yml exec stock-analyzer bash
 docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
 ```
 
+If your repository follows the `origin` (your fork) + `upstream` (main repo) workflow, you can use the built-in helper script to sync upstream changes and redeploy Docker in one step:
+
+```bash
+./scripts/update-from-upstream.sh
+```
+
+The script will:
+- Require a clean working tree before running
+- Switch to `main`
+- Run `git fetch upstream --prune`
+- Run `git pull --ff-only upstream main`
+- Run `git push origin main`
+- Rebuild and restart Docker services
+
+If you want to inspect incoming upstream changes before updating, run:
+
+```bash
+git log --oneline main..upstream/main
+git diff --stat main..upstream/main
+```
+
 ### 5. Data Persistence
 
 Data is automatically saved to host directories:
 - `./data/` - Database files
 - `./logs/` - Log files
 - `./reports/` - Analysis reports
+
 
 ---
 
@@ -124,6 +146,61 @@ python main.py --schedule
 
 # Background run (using nohup)
 nohup python main.py --schedule > /dev/null 2>&1 &
+```
+
+### Recommended for long-running macOS setups: use launchd for market review only
+
+If you are running on macOS and want a daily market review without stock analysis, prefer the native `launchd` scheduler instead of keeping `python main.py --schedule` running:
+
+```bash
+/Users/david/dev/daily_stock_analysis/scripts/run_market_review_launchd.sh
+```
+
+That script runs:
+
+```bash
+docker compose -f /Users/david/dev/daily_stock_analysis/docker/docker-compose.yml run --rm analyzer python main.py --market-review
+```
+
+Suggested `~/Library/LaunchAgents/com.david.daily-stock-analysis.market-review.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.david.daily-stock-analysis.market-review</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/david/dev/daily_stock_analysis/scripts/run_market_review_launchd.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/david/dev/daily_stock_analysis</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>18</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/david/dev/daily_stock_analysis/logs/launchd_market_review.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/david/dev/daily_stock_analysis/logs/launchd_market_review.err.log</string>
+</dict>
+</plist>
+```
+
+Load it with:
+
+```bash
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.david.daily-stock-analysis.market-review.plist 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.david.daily-stock-analysis.market-review.plist
+launchctl enable "gui/$(id -u)/com.david.daily-stock-analysis.market-review"
 ```
 
 ---

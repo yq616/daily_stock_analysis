@@ -80,12 +80,34 @@ docker-compose -f ./docker/docker-compose.yml exec stock-analyzer bash
 docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
 ```
 
+如果你的仓库采用 `origin`(自己的 fork) + `upstream`(原仓库) 协作方式，可直接使用仓库自带脚本一键完成“同步 upstream → 推送 origin → 重建 Docker 服务”：
+
+```bash
+./scripts/update-from-upstream.sh
+```
+
+脚本会执行以下动作：
+- 要求当前工作区干净，避免覆盖未提交改动
+- 自动切换到 `main`
+- `git fetch upstream --prune`
+- `git pull --ff-only upstream main`
+- `git push origin main`
+- `docker compose build && docker compose up -d`
+
+如果你只想先看差异，再决定是否更新，可先执行：
+
+```bash
+git log --oneline main..upstream/main
+git diff --stat main..upstream/main
+```
+
 ### 5. 数据持久化
 
 数据自动保存在宿主机目录：
 - `./data/` - 数据库文件
 - `./logs/` - 日志文件
 - `./reports/` - 分析报告
+
 
 ---
 
@@ -134,6 +156,61 @@ python main.py --webui-only
 
 # 启动 Web 界面（启动时执行一次分析；需每日定时请加 --schedule 或设 SCHEDULE_ENABLED=true）
 python main.py --webui
+```
+
+### macOS 长期运行推荐：使用 launchd 只跑大盘复盘
+
+如果你在 macOS 上长期运行，并且希望每天固定时间只做大盘复盘，推荐不要常驻 `python main.py --schedule`，而是使用系统原生的 `launchd` 定时执行：
+
+```bash
+/Users/david/dev/daily_stock_analysis/scripts/run_market_review_launchd.sh
+```
+
+该脚本内部会调用：
+
+```bash
+docker compose -f /Users/david/dev/daily_stock_analysis/docker/docker-compose.yml run --rm analyzer python main.py --market-review
+```
+
+推荐的 `~/Library/LaunchAgents/com.david.daily-stock-analysis.market-review.plist` 示例：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.david.daily-stock-analysis.market-review</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/david/dev/daily_stock_analysis/scripts/run_market_review_launchd.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/david/dev/daily_stock_analysis</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>18</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/david/dev/daily_stock_analysis/logs/launchd_market_review.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/david/dev/daily_stock_analysis/logs/launchd_market_review.err.log</string>
+</dict>
+</plist>
+```
+
+加载方式：
+
+```bash
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.david.daily-stock-analysis.market-review.plist 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.david.daily-stock-analysis.market-review.plist
+launchctl enable "gui/$(id -u)/com.david.daily-stock-analysis.market-review"
 ```
 
 > 不知道怎么访问？→ [云服务器 Web 界面访问指南](deploy-webui-cloud.md)

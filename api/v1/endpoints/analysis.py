@@ -46,6 +46,7 @@ from api.v1.schemas.history import (
     ReportSummary,
     ReportStrategy,
     ReportDetails,
+    stringify_strategy_value,
 )
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import Config
@@ -582,11 +583,28 @@ def get_analysis_status(task_id: str) -> TaskStatus:
     task = task_queue.get_task(task_id)
     
     if task:
+        queue_result: Optional[AnalysisResultResponse] = None
+        if task.status == TaskStatusEnum.COMPLETED and isinstance(task.result, dict):
+            try:
+                queue_result = AnalysisResultResponse(
+                    query_id=task.task_id,
+                    stock_code=task.result.get("stock_code") or task.stock_code,
+                    stock_name=task.result.get("stock_name") or task.stock_name or task.stock_code,
+                    report=task.result.get("report") or {},
+                    created_at=(
+                        task.completed_at.isoformat()
+                        if task.completed_at
+                        else datetime.now().isoformat()
+                    ),
+                )
+            except Exception as e:
+                logger.warning("任务 %s 队列结果解析失败，回退数据库查询: %s", task.task_id, e)
+
         return TaskStatus(
             task_id=task.task_id,
             status=task.status.value,
             progress=task.progress,
-            result=None,  # In-progress tasks do not carry a result payload.
+            result=queue_result,
             error=task.error,
             stock_name=task.stock_name,
             original_query=task.original_query,
@@ -648,10 +666,10 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     analysis_summary=record.analysis_summary,
                 ),
                 strategy=ReportStrategy(
-                    ideal_buy=str(getattr(record, 'ideal_buy', None)) if getattr(record, 'ideal_buy', None) is not None else None,
-                    secondary_buy=str(getattr(record, 'secondary_buy', None)) if getattr(record, 'secondary_buy', None) is not None else None,
-                    stop_loss=str(getattr(record, 'stop_loss', None)) if getattr(record, 'stop_loss', None) is not None else None,
-                    take_profit=str(getattr(record, 'take_profit', None)) if getattr(record, 'take_profit', None) is not None else None,
+                    ideal_buy=stringify_strategy_value(getattr(record, 'ideal_buy', None)),
+                    secondary_buy=stringify_strategy_value(getattr(record, 'secondary_buy', None)),
+                    stop_loss=stringify_strategy_value(getattr(record, 'stop_loss', None)),
+                    take_profit=stringify_strategy_value(getattr(record, 'take_profit', None)),
                 ),
             ).model_dump()
             return TaskStatus(
@@ -783,10 +801,10 @@ def _build_analysis_report(
     strategy = None
     if strategy_data:
         strategy = ReportStrategy(
-            ideal_buy=strategy_data.get("ideal_buy"),
-            secondary_buy=strategy_data.get("secondary_buy"),
-            stop_loss=strategy_data.get("stop_loss"),
-            take_profit=strategy_data.get("take_profit")
+            ideal_buy=stringify_strategy_value(strategy_data.get("ideal_buy")),
+            secondary_buy=stringify_strategy_value(strategy_data.get("secondary_buy")),
+            stop_loss=stringify_strategy_value(strategy_data.get("stop_loss")),
+            take_profit=stringify_strategy_value(strategy_data.get("take_profit"))
         )
 
     extracted_fundamental = extract_fundamental_detail_fields(

@@ -695,9 +695,9 @@ class Config:
     # 全局总开关；关闭时返回 not_supported 并保持主流程无变化
     enable_fundamental_pipeline: bool = True
     # 基本面阶段总预算（秒）
-    fundamental_stage_timeout_seconds: float = 1.5
+    fundamental_stage_timeout_seconds: float = 15.0
     # 单能力源调用超时（秒）
-    fundamental_fetch_timeout_seconds: float = 0.8
+    fundamental_fetch_timeout_seconds: float = 15.0
     # 单能力失败重试次数（已包含首次）
     fundamental_retry_max: int = 1
     # 基本面上下文短 TTL（秒）
@@ -1028,7 +1028,11 @@ class Config:
         bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
         bocha_api_keys = [k.strip() for k in bocha_keys_str.split(',') if k.strip()]
 
+        # Support both MINIMAX_API_KEYS (plural, legacy) and MINIMAX_CN_API_KEY (China endpoint)
         minimax_keys_str = os.getenv('MINIMAX_API_KEYS', '')
+        if not minimax_keys_str:
+            # Fallback to MINIMAX_CN_API_KEY for China endpoint users
+            minimax_keys_str = os.getenv('MINIMAX_CN_API_KEY', '')
         minimax_api_keys = [k.strip() for k in minimax_keys_str.split(',') if k.strip()]
         
         tavily_keys_str = os.getenv('TAVILY_API_KEYS', '')

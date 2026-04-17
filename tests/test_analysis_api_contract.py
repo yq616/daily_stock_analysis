@@ -553,6 +553,41 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             },
         )
 
+    def test_build_analysis_report_stringifies_numeric_strategy_values(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        report = _build_analysis_report(
+            report_data={
+                "meta": {
+                    "query_id": "task-1",
+                    "stock_code": "601985",
+                    "stock_name": "中国核电",
+                    "report_type": "detailed",
+                },
+                "summary": {
+                    "analysis_summary": "summary",
+                    "operation_advice": "持有",
+                    "trend_prediction": "震荡",
+                    "sentiment_score": 68,
+                },
+                "strategy": {
+                    "ideal_buy": 8.55,
+                    "secondary_buy": 8.4,
+                    "stop_loss": 8.1,
+                    "take_profit": 9.2,
+                },
+            },
+            query_id="task-1",
+            stock_code="601985",
+            stock_name="中国核电",
+        )
+
+        self.assertEqual(report.strategy.ideal_buy, "8.55")
+        self.assertEqual(report.strategy.secondary_buy, "8.4")
+        self.assertEqual(report.strategy.stop_loss, "8.1")
+        self.assertEqual(report.strategy.take_profit, "9.2")
+
     def test_trigger_analysis_rejects_blank_only_stock_inputs(self) -> None:
         if trigger_analysis is None:
             self.skipTest("fastapi is not installed in this test environment")

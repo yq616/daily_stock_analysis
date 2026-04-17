@@ -294,6 +294,31 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(detail.get("stop_loss"), "110.0")
         self.assertEqual(detail.get("take_profit"), "150.0")
 
+    def test_history_detail_endpoint_stringifies_numeric_strategy_values(self) -> None:
+        """History detail API should stringify numeric strategy values before schema validation."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        record_id = self._save_history("query_007_endpoint")
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            row.ideal_buy = 125.5
+            row.secondary_buy = 120.0
+            row.stop_loss = 110.0
+            row.take_profit = 150.0
+            row.raw_result = json.dumps({"model_used": "gemini/gemini-2.0-flash"})
+            session.commit()
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+
+        self.assertEqual(report.strategy.ideal_buy, "125.5")
+        self.assertEqual(report.strategy.secondary_buy, "120.0")
+        self.assertEqual(report.strategy.stop_loss, "110.0")
+        self.assertEqual(report.strategy.take_profit, "150.0")
+
     def test_history_detail_uses_fundamental_snapshot_fallback_when_context_missing(self) -> None:
         """When context_snapshot is disabled, detail API should fallback to fundamental_snapshot."""
         if get_history_detail is None:

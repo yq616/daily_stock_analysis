@@ -14,6 +14,13 @@ from typing import Optional, List, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
+def stringify_strategy_value(value: Any) -> Optional[str]:
+    """Normalize strategy point values to the API's string contract."""
+    if value is None:
+        return None
+    return str(value)
+
+
 class HistoryItem(BaseModel):
     """历史记录摘要（列表展示用）"""
 

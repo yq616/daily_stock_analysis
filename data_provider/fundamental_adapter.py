@@ -91,6 +91,219 @@ def _normalize_code(raw: Any) -> str:
     return s
 
 
+def _with_akshare_market_prefix(stock_code: str) -> str:
+    """
+    Convert a raw A-share code into AkShare's market-prefixed format.
+    """
+    raw = _safe_str(stock_code).lower()
+    if re.match(r"^(sh|sz|bj)\d{6}$", raw):
+        return raw
+
+    code = _normalize_code(stock_code)
+    if re.match(r"^(60|68|90)", code):
+        return f"sh{code}"
+    if re.match(r"^(00|30|20)", code):
+        return f"sz{code}"
+    if re.match(r"^(4|8)", code):
+        return f"bj{code}"
+    return code.lower()
+
+
+def _recent_report_dates(now: Optional[datetime] = None, limit: int = 8) -> List[str]:
+    """
+    Return completed quarter-end dates in descending order for market-wide report APIs.
+    """
+    now = now or datetime.now()
+    quarter_ends = [
+        datetime(now.year, 3, 31),
+        datetime(now.year, 6, 30),
+        datetime(now.year, 9, 30),
+        datetime(now.year, 12, 31),
+    ]
+    latest_completed = None
+    for item in reversed(quarter_ends):
+        if now >= item:
+            latest_completed = item
+            break
+    if latest_completed is None:
+        latest_completed = datetime(now.year - 1, 12, 31)
+
+    candidates: List[str] = []
+    cursor = latest_completed
+    while len(candidates) < max(1, limit):
+        candidates.append(cursor.strftime("%Y%m%d"))
+        month_day = cursor.strftime("%m%d")
+        if month_day == "1231":
+            cursor = datetime(cursor.year, 9, 30)
+        elif month_day == "0930":
+            cursor = datetime(cursor.year, 6, 30)
+        elif month_day == "0630":
+            cursor = datetime(cursor.year, 3, 31)
+        else:
+            cursor = datetime(cursor.year - 1, 12, 31)
+    return candidates
+
+
+def _extract_latest_value_from_wide_table(
+    df: pd.DataFrame,
+    indicator_keywords: List[str],
+    report_date: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """
+    Extract the latest non-empty metric value from AkShare's wide financial abstract table.
+    """
+    if df is None or df.empty or "指标" not in df.columns:
+        return None, None
+
+    date_columns = [str(col) for col in df.columns if re.fullmatch(r"\d{8}", str(col))]
+    if not date_columns:
+        return None, None
+
+    ordered_dates = sorted(date_columns, reverse=True)
+    if report_date:
+        ordered_dates = [d for d in ordered_dates if d <= report_date]
+        if not ordered_dates:
+            ordered_dates = sorted(date_columns, reverse=True)
+
+    row = None
+    for keyword in indicator_keywords:
+        try:
+            indicator_series = df["指标"].astype(str)
+            matched = df[indicator_series == keyword]
+            if matched.empty:
+                matched = df[indicator_series.str.contains(keyword, na=False, regex=False)]
+        except Exception:
+            continue
+        if not matched.empty:
+            row = matched.iloc[0]
+            break
+    if row is None:
+        return None, None
+
+    for date_col in ordered_dates:
+        value = row.get(date_col)
+        if value is None:
+            continue
+        if pd.isna(value):
+            continue
+        if str(value).strip() in ("", "-", "nan", "None"):
+            continue
+        return value, date_col
+    return None, None
+
+
+def _build_financial_abstract_payload(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Parse AkShare stock_financial_abstract wide table into normalized growth/earnings payloads.
+    """
+    report_dates = _recent_report_dates(limit=1)
+    latest_report_date = report_dates[0] if report_dates else None
+
+    revenue, revenue_date = _extract_latest_value_from_wide_table(
+        df,
+        ["营业总收入"],
+        report_date=latest_report_date,
+    )
+    net_profit_parent, profit_date = _extract_latest_value_from_wide_table(
+        df,
+        ["归母净利润", "归属母公司净利润"],
+        report_date=latest_report_date,
+    )
+    operating_cash_flow, cashflow_date = _extract_latest_value_from_wide_table(
+        df,
+        ["经营现金流量净额", "经营活动净现金"],
+        report_date=latest_report_date,
+    )
+    revenue_yoy, revenue_yoy_date = _extract_latest_value_from_wide_table(
+        df,
+        ["营业总收入增长率", "营业收入增长率"],
+        report_date=latest_report_date,
+    )
+    profit_yoy, profit_yoy_date = _extract_latest_value_from_wide_table(
+        df,
+        ["归属母公司净利润增长率", "归母净利润增长率"],
+        report_date=latest_report_date,
+    )
+    roe, roe_date = _extract_latest_value_from_wide_table(
+        df,
+        ["净资产收益率(ROE)", "净资产收益率"],
+        report_date=latest_report_date,
+    )
+    gross_margin, gross_margin_date = _extract_latest_value_from_wide_table(
+        df,
+        ["毛利率"],
+        report_date=latest_report_date,
+    )
+
+    normalized_report_date = next(
+        (
+            _normalize_report_date(item)
+            for item in [revenue_date, profit_date, cashflow_date, revenue_yoy_date, profit_yoy_date, roe_date, gross_margin_date]
+            if item
+        ),
+        None,
+    )
+    return {
+        "growth": {
+            "revenue_yoy": _safe_float(revenue_yoy),
+            "net_profit_yoy": _safe_float(profit_yoy),
+            "roe": _safe_float(roe),
+            "gross_margin": _safe_float(gross_margin),
+        },
+        "financial_report": {
+            "report_date": normalized_report_date,
+            "revenue": _safe_float(revenue),
+            "net_profit_parent": _safe_float(net_profit_parent),
+            "operating_cash_flow": _safe_float(operating_cash_flow),
+            "roe": _safe_float(roe),
+        },
+    }
+
+
+def _build_shareholder_count_payload(df: pd.DataFrame, stock_code: str) -> Dict[str, Any]:
+    """
+    Parse shareholder count detail into normalized institution fallback fields.
+    """
+    work_df = _filter_rows_by_code(df, stock_code)
+    if work_df.empty:
+        return {}
+
+    if "股东户数统计截止日" in work_df.columns:
+        try:
+            work_df = work_df.assign(
+                _snapshot_ts=pd.to_datetime(work_df["股东户数统计截止日"], errors="coerce")
+            ).sort_values(by="_snapshot_ts", ascending=False)
+        except Exception:
+            pass
+    row = work_df.iloc[0]
+
+    return {
+        "shareholder_count": _safe_float(_pick_by_keywords(row, ["股东户数-本次", "本次股东户数"])),
+        "shareholder_count_change": _safe_float(_pick_by_keywords(row, ["股东户数-增减"])),
+        "shareholder_count_change_pct": _safe_float(_pick_by_keywords(row, ["股东户数-增减比例"])),
+        "avg_hold_quantity": _safe_float(_pick_by_keywords(row, ["户均持股数量"])),
+        "holder_snapshot_date": _normalize_report_date(_pick_by_keywords(row, ["股东户数统计截止日", "截止日"])),
+    }
+
+
+def _report_date_to_institute_period(report_date: str) -> Optional[str]:
+    """
+    Convert quarter-end date like 20240930 to Sina institute_hold period code 20243.
+    """
+    value = _safe_str(report_date)
+    if len(value) != 8 or not value.isdigit():
+        return None
+    quarter = {
+        "0331": "1",
+        "0630": "2",
+        "0930": "3",
+        "1231": "4",
+    }.get(value[4:])
+    if quarter is None:
+        return None
+    return f"{value[:4]}{quarter}"
+
+
 def _pick_by_keywords(row: pd.Series, keywords: List[str]) -> Optional[Any]:
     """
     Return first non-empty row value whose column name contains any keyword.
@@ -264,6 +477,9 @@ def _extract_latest_row(df: pd.DataFrame, stock_code: str) -> Optional[pd.Series
 class AkshareFundamentalAdapter:
     """AkShare adapter for fundamentals, capital flow and dragon-tiger signals."""
 
+    def _report_date_candidates(self, limit: int = 8) -> List[str]:
+        return _recent_report_dates(limit=limit)
+
     def _call_df_candidates(
         self,
         candidates: List[Tuple[str, Dict[str, Any]]],
@@ -310,42 +526,59 @@ class AkshareFundamentalAdapter:
         ])
         result["errors"].extend(fin_errors)
         if fin_df is not None:
-            row = _extract_latest_row(fin_df, stock_code)
-            if row is not None:
-                revenue_yoy = _safe_float(_pick_by_keywords(row, ["营业收入同比", "营收同比", "收入同比", "同比增长"]))
-                profit_yoy = _safe_float(_pick_by_keywords(row, ["净利润同比", "净利同比", "归母净利润同比"]))
-                roe = _safe_float(_pick_by_keywords(row, ["净资产收益率", "ROE", "净资产收益"]))
-                gross_margin = _safe_float(_pick_by_keywords(row, ["毛利率"]))
-                report_date = _normalize_report_date(_pick_by_keywords(row, _DIVIDEND_KEYWORD_MAP["report_date"]))
-                revenue = _safe_float(_pick_by_keywords(row, ["营业总收入", "营业收入", "营收"]))
-                net_profit_parent = _safe_float(_pick_by_keywords(row, ["归母净利润", "母公司股东净利润", "净利润"]))
-                operating_cash_flow = _safe_float(
-                    _pick_by_keywords(row, ["经营活动产生的现金流量净额", "经营现金流", "经营活动现金流"])
-                )
-                result["growth"] = {
-                    "revenue_yoy": revenue_yoy,
-                    "net_profit_yoy": profit_yoy,
-                    "roe": roe,
-                    "gross_margin": gross_margin,
-                }
-                financial_report_payload = {
-                    "report_date": report_date,
-                    "revenue": revenue,
-                    "net_profit_parent": net_profit_parent,
-                    "operating_cash_flow": operating_cash_flow,
-                    "roe": roe,
-                }
+            if "指标" in fin_df.columns:
+                abstract_payload = _build_financial_abstract_payload(fin_df)
+                growth_payload = abstract_payload.get("growth", {})
+                financial_report_payload = abstract_payload.get("financial_report", {})
+                if any(v is not None for v in growth_payload.values()):
+                    result["growth"] = growth_payload
                 if any(v is not None for v in financial_report_payload.values()):
                     result["earnings"]["financial_report"] = financial_report_payload
-                result["source_chain"].append(f"growth:{fin_source}")
+                if result["growth"] or result["earnings"].get("financial_report"):
+                    result["source_chain"].append(f"growth:{fin_source}")
+            else:
+                row = _extract_latest_row(fin_df, stock_code)
+                if row is not None:
+                    revenue_yoy = _safe_float(_pick_by_keywords(row, ["营业收入同比", "营收同比", "收入同比", "同比增长"]))
+                    profit_yoy = _safe_float(_pick_by_keywords(row, ["净利润同比", "净利同比", "归母净利润同比"]))
+                    roe = _safe_float(_pick_by_keywords(row, ["净资产收益率", "ROE", "净资产收益"]))
+                    gross_margin = _safe_float(_pick_by_keywords(row, ["毛利率"]))
+                    report_date = _normalize_report_date(_pick_by_keywords(row, _DIVIDEND_KEYWORD_MAP["report_date"]))
+                    revenue = _safe_float(_pick_by_keywords(row, ["营业总收入", "营业收入", "营收"]))
+                    net_profit_parent = _safe_float(_pick_by_keywords(row, ["归母净利润", "母公司股东净利润", "净利润"]))
+                    operating_cash_flow = _safe_float(
+                        _pick_by_keywords(row, ["经营活动产生的现金流量净额", "经营现金流", "经营活动现金流"])
+                    )
+                    result["growth"] = {
+                        "revenue_yoy": revenue_yoy,
+                        "net_profit_yoy": profit_yoy,
+                        "roe": roe,
+                        "gross_margin": gross_margin,
+                    }
+                    financial_report_payload = {
+                        "report_date": report_date,
+                        "revenue": revenue,
+                        "net_profit_parent": net_profit_parent,
+                        "operating_cash_flow": operating_cash_flow,
+                        "roe": roe,
+                    }
+                    if any(v is not None for v in financial_report_payload.values()):
+                        result["earnings"]["financial_report"] = financial_report_payload
+                    result["source_chain"].append(f"growth:{fin_source}")
 
         # Earnings forecast
-        forecast_df, forecast_source, forecast_errors = self._call_df_candidates([
+        forecast_candidates: List[Tuple[str, Dict[str, Any]]] = []
+        for report_date in self._report_date_candidates():
+            forecast_candidates.append(("stock_yjyg_em", {"date": report_date}))
+            forecast_candidates.append(("stock_yjbb_em", {"date": report_date}))
+        # Compatibility fallback for older AkShare releases.
+        forecast_candidates.extend([
             ("stock_yjyg_em", {"symbol": stock_code}),
             ("stock_yjyg_em", {}),
             ("stock_yjbb_em", {"symbol": stock_code}),
             ("stock_yjbb_em", {}),
         ])
+        forecast_df, forecast_source, forecast_errors = self._call_df_candidates(forecast_candidates)
         result["errors"].extend(forecast_errors)
         if forecast_df is not None:
             row = _extract_latest_row(forecast_df, stock_code)
@@ -356,10 +589,14 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"earnings_forecast:{forecast_source}")
 
         # Earnings quick report
-        quick_df, quick_source, quick_errors = self._call_df_candidates([
+        quick_candidates: List[Tuple[str, Dict[str, Any]]] = []
+        for report_date in self._report_date_candidates():
+            quick_candidates.append(("stock_yjkb_em", {"date": report_date}))
+        quick_candidates.extend([
             ("stock_yjkb_em", {"symbol": stock_code}),
             ("stock_yjkb_em", {}),
         ])
+        quick_df, quick_source, quick_errors = self._call_df_candidates(quick_candidates)
         result["errors"].extend(quick_errors)
         if quick_df is not None:
             row = _extract_latest_row(quick_df, stock_code)
@@ -383,10 +620,16 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"dividend:{dividend_source}")
 
         # Institution / top shareholders
-        inst_df, inst_source, inst_errors = self._call_df_candidates([
+        inst_candidates: List[Tuple[str, Dict[str, Any]]] = []
+        for report_date in self._report_date_candidates():
+            period_code = _report_date_to_institute_period(report_date)
+            if period_code:
+                inst_candidates.append(("stock_institute_hold", {"symbol": period_code}))
+        inst_candidates.extend([
             ("stock_institute_hold", {}),
             ("stock_institute_recommend", {}),
         ])
+        inst_df, inst_source, inst_errors = self._call_df_candidates(inst_candidates)
         result["errors"].extend(inst_errors)
         if inst_df is not None:
             row = _extract_latest_row(inst_df, stock_code)
@@ -395,19 +638,46 @@ class AkshareFundamentalAdapter:
                 result["institution"]["institution_holding_change"] = inst_change
                 result["source_chain"].append(f"institution:{inst_source}")
 
-        top10_df, top10_source, top10_errors = self._call_df_candidates([
+        prefixed_symbol = _with_akshare_market_prefix(stock_code)
+        top10_candidates: List[Tuple[str, Dict[str, Any]]] = []
+        for report_date in self._report_date_candidates():
+            top10_candidates.append(("stock_gdfx_top_10_em", {"symbol": prefixed_symbol, "date": report_date}))
+        top10_candidates.extend([
             ("stock_gdfx_top_10_em", {"symbol": stock_code}),
             ("stock_gdfx_top_10_em", {}),
             ("stock_zh_a_gdhs_detail_em", {"symbol": stock_code}),
-            ("stock_zh_a_gdhs_detail_em", {}),
         ])
+        top10_df, top10_source, top10_errors = self._call_df_candidates(top10_candidates)
         result["errors"].extend(top10_errors)
         if top10_df is not None:
-            row = _extract_latest_row(top10_df, stock_code)
-            if row is not None:
-                holder_change = _safe_float(_pick_by_keywords(row, ["增减", "变化", "持股变化", "变动"]))
-                result["institution"]["top10_holder_change"] = holder_change
-                result["source_chain"].append(f"top10:{top10_source}")
+            if top10_source == "stock_zh_a_gdhs_detail_em":
+                shareholder_payload = _build_shareholder_count_payload(top10_df, stock_code)
+                if any(v is not None for v in shareholder_payload.values()):
+                    result["institution"].update(shareholder_payload)
+                    result["source_chain"].append(f"shareholder_count:{top10_source}")
+            else:
+                row = _extract_latest_row(top10_df, stock_code)
+                if row is not None:
+                    holder_change = _safe_float(_pick_by_keywords(row, ["增减", "变化", "持股变化", "变动"]))
+                    result["institution"]["top10_holder_change"] = holder_change
+                    result["source_chain"].append(f"top10:{top10_source}")
+
+        shareholder_detail_df, shareholder_detail_source, shareholder_detail_errors = self._call_df_candidates([
+            ("stock_zh_a_gdhs_detail_em", {"symbol": stock_code}),
+        ])
+        result["errors"].extend(shareholder_detail_errors)
+        if shareholder_detail_df is not None:
+            shareholder_payload = _build_shareholder_count_payload(shareholder_detail_df, stock_code)
+            if any(v is not None for v in shareholder_payload.values()):
+                result["institution"].update(
+                    {
+                        key: value
+                        for key, value in shareholder_payload.items()
+                        if result["institution"].get(key) is None
+                    }
+                )
+                if f"shareholder_count:{shareholder_detail_source}" not in result["source_chain"]:
+                    result["source_chain"].append(f"shareholder_count:{shareholder_detail_source}")
 
         has_content = bool(result["growth"] or result["earnings"] or result["institution"])
         result["status"] = "partial" if has_content else "not_supported"

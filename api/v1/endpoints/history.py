@@ -28,6 +28,7 @@ from api.v1.schemas.history import (
     ReportStrategy,
     ReportDetails,
     MarkdownReportResponse,
+    stringify_strategy_value,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
@@ -288,10 +289,10 @@ def get_history_detail(
         )
         
         strategy = ReportStrategy(
-            ideal_buy=result.get("ideal_buy"),
-            secondary_buy=result.get("secondary_buy"),
-            stop_loss=result.get("stop_loss"),
-            take_profit=result.get("take_profit")
+            ideal_buy=stringify_strategy_value(result.get("ideal_buy")),
+            secondary_buy=stringify_strategy_value(result.get("secondary_buy")),
+            stop_loss=stringify_strategy_value(result.get("stop_loss")),
+            take_profit=stringify_strategy_value(result.get("take_profit"))
         )
         
         fallback_fundamental = db_manager.get_latest_fundamental_snapshot(
